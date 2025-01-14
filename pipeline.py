@@ -1,5 +1,3 @@
-# pipeline.py
-
 import torch
 import asyncio
 import logging
@@ -7,14 +5,15 @@ import hashlib
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline as huggingface_pipeline
 from sentence_transformers import SentenceTransformer, util
-from langchain_ollama import OllamaLLM
 import re
-import json
 from collections import OrderedDict
+import spacy
+from rapidfuzz import process, fuzz
+from langchain_ollama import OllamaLLM
 
-# Configure logging with detailed formatting
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
@@ -23,7 +22,6 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
-
 logger = logging.getLogger(__name__)
 
 @dataclass
@@ -36,14 +34,14 @@ class SafetyCheckResult:
     timestamp: datetime = datetime.now()
 
 class SafetyViolation(Exception):
-    """Custom exception for safety violations with detailed reporting."""
+    """Custom exception for safety violations."""
     def __init__(self, check_name: str, details: str):
         self.check_name = check_name
         self.details = details
         super().__init__(f"Safety violation in {check_name}: {details}")
 
 class LRUCache(OrderedDict):
-    """Thread-safe LRU cache for storing safety check results."""
+    """Thread-safe LRU cache."""
     def __init__(self, maxsize: int = 1000):
         super().__init__()
         self.maxsize = maxsize
@@ -66,26 +64,23 @@ class LRUCache(OrderedDict):
                 self.popitem(last=False)
 
 class EnhancedGuardrail:
-    """Enhanced guardrail system combining multiple safety checks with caching and detailed reporting."""
-    
-    def __init__(self, config_path: Optional[str] = None):
-        self.config = self._load_config(config_path)
+    """Enhanced guardrail system for safety checks."""
+    def __init__(self):
+        self.config = self._load_config()
         self._initialize_models()
         self.cache = LRUCache(maxsize=self.config['cache_size'])
         self.violation_patterns = self._compile_patterns()
-        self.context_window: List[Dict] = []
-        self.context_window_size = self.config['context_window_size']
+        self.nlp = spacy.load("en_core_web_sm")
+        self.llm = OllamaLLM(model="qwen2.5:0.5b")
 
-    def _load_config(self, config_path: Optional[str]) -> Dict[Any, Any]:
-        """Load configuration with fallback to default values."""
-        default_config = {
+    def _load_config(self) -> Dict[str, Any]:
+        return {
             'cache_size': 1000,
-            'context_window_size': 10,
             'thresholds': {
-                'toxicity': 0.7,
-                'jailbreak': 0.65,
-                'semantic_similarity': 0.75,
-                'malicious_intent': 0.6
+                'toxicity': 0.5,
+                'jailbreak': 0.8,
+                'similarity': 0.6,
+                'combined': 0.6
             },
             'models': {
                 'toxicity': 's-nlp/roberta_toxicity_classifier',
@@ -93,61 +88,31 @@ class EnhancedGuardrail:
                 'embeddings': 'all-MiniLM-L6-v2'
             },
             'harmful_patterns': [
-                r"bypass.*security",
-                r"hack.*system",
-                r"exploit.*vulnerability",
-                r"ignore.*instructions",
-                r"override.*safety",
+                r"make.*bomb", r"bypass.*security", r"hack.*system", r"exploit.*vulnerability"
             ]
         }
-        
-        if config_path:
-            try:
-                with open(config_path, 'r') as f:
-                    loaded_config = json.load(f)
-                    return {**default_config, **loaded_config}
-            except Exception as e:
-                logger.warning(f"Failed to load config from {config_path}: {e}. Using defaults.")
-        
-        return default_config
 
     def _initialize_models(self) -> None:
-        """Initialize all required models with error handling."""
         try:
-            self.toxicity_tokenizer = AutoTokenizer.from_pretrained(
-                self.config['models']['toxicity']
-            )
-            self.toxicity_model = AutoModelForSequenceClassification.from_pretrained(
-                self.config['models']['toxicity']
-            ).eval()
-
-            self.jailbreak_tokenizer = AutoTokenizer.from_pretrained(
-                self.config['models']['jailbreak']
-            )
-            self.jailbreak_model = AutoModelForSequenceClassification.from_pretrained(
-                self.config['models']['jailbreak']
-            ).eval()
-
+            self.toxicity_tokenizer = AutoTokenizer.from_pretrained(self.config['models']['toxicity'])
+            self.toxicity_model = AutoModelForSequenceClassification.from_pretrained(self.config['models']['toxicity']).eval()
+            self.jailbreak_tokenizer = AutoTokenizer.from_pretrained(self.config['models']['jailbreak'])
+            self.jailbreak_model = AutoModelForSequenceClassification.from_pretrained(self.config['models']['jailbreak']).eval()
             self.embedding_model = SentenceTransformer(self.config['models']['embeddings'])
-
-            self.llm = OllamaLLM(model="llama3.2")
-
-            logger.info("All models initialized successfully")
+            logger.info("Models initialized successfully")
         except Exception as e:
-            logger.error(f"Model initialization failed: {e}")
+            logger.error(f"Failed to initialize models: {e}")
             raise
 
     def _compile_patterns(self) -> List[re.Pattern]:
-        """Compile regex patterns for pattern matching checks."""
         return [re.compile(pattern, re.IGNORECASE) for pattern in self.config['harmful_patterns']]
 
     async def check_toxicity(self, text: str) -> SafetyCheckResult:
         inputs = self.toxicity_tokenizer(text, return_tensors="pt", truncation=True)
         with torch.no_grad():
             outputs = self.toxicity_model(**inputs)
-        scores = torch.softmax(outputs.logits, dim=1)
-        toxicity_score = scores[0][1].item()
-        
+            scores = torch.softmax(outputs.logits, dim=1)
+            toxicity_score = scores[0][1].item()
         return SafetyCheckResult(
             check_name="Toxicity",
             is_safe=toxicity_score < self.config['thresholds']['toxicity'],
@@ -160,15 +125,26 @@ class EnhancedGuardrail:
         inputs = self.jailbreak_tokenizer(text, return_tensors="pt", truncation=True)
         with torch.no_grad():
             outputs = self.jailbreak_model(**inputs)
-        scores = torch.softmax(outputs.logits, dim=1)
-        jailbreak_score = scores[0][1].item()
-
+            scores = torch.softmax(outputs.logits, dim=1)
+            jailbreak_score = scores[0][1].item()
         return SafetyCheckResult(
             check_name="Jailbreak",
             is_safe=jailbreak_score < self.config['thresholds']['jailbreak'],
             confidence=jailbreak_score,
             threshold=self.config['thresholds']['jailbreak'],
-            details=f"Jailbreak detection score: {jailbreak_score:.3f}"
+            details=f"Jailbreak score: {jailbreak_score:.3f}"
+        )
+
+    async def check_patterns(self, text: str) -> SafetyCheckResult:
+        matches = [pattern.search(text) for pattern in self.violation_patterns]
+        found_patterns = [match.group() for match in matches if match]
+        is_safe = not found_patterns
+        return SafetyCheckResult(
+            check_name="Harmful Patterns",
+            is_safe=is_safe,
+            confidence=0.0 if not is_safe else 1.0,
+            threshold=0.0,
+            details=f"Matched patterns: {found_patterns}"
         )
 
     async def evaluate_prompt(self, prompt: str) -> Tuple[bool, List[SafetyCheckResult]]:
@@ -180,50 +156,44 @@ class EnhancedGuardrail:
 
         safety_checks = await asyncio.gather(
             self.check_toxicity(prompt),
-            self.check_jailbreak(prompt)
+            self.check_jailbreak(prompt),
+            self.check_patterns(prompt)
         )
 
         is_safe = all(check.is_safe for check in safety_checks)
         await self.cache.put(prompt_hash, (is_safe, safety_checks))
-        
         return is_safe, safety_checks
 
     async def process_prompt(self, prompt: str) -> Dict[str, Any]:
         try:
             is_safe, safety_checks = await self.evaluate_prompt(prompt)
-            
             result = {
                 'timestamp': datetime.now().isoformat(),
                 'prompt': prompt,
                 'is_safe': is_safe,
-                'checks': [vars(check) for check in safety_checks],
-                'status': 'success'
+                'checks': [vars(check) for check in safety_checks]
             }
-            
-            if is_safe:
+
+            if not is_safe:
+                result['status'] = 'blocked'
+                violations = [check.check_name for check in safety_checks if not check.is_safe]
+                result['error'] = f"Blocked due to: {', '.join(violations)}"
+            else:
+                result['status'] = 'allowed'
                 try:
                     response = self.llm.invoke(prompt)
                     result['response'] = response
                 except Exception as e:
-                    logger.error(f"LLM response generation failed: {e}")
-                    result['status'] = 'error'
-                    result['error'] = str(e)
-            else:
-                result['status'] = 'blocked'
-                violations = [check.check_name for check in safety_checks if not check.is_safe]
-                result['error'] = f"Safety checks failed: {', '.join(violations)}."
-                
+                    logger.error(f"Failed to generate response: {e}")
+                    result['response'] = "Error generating response."
+
             return result
-                
+
         except Exception as e:
             logger.error(f"Error processing prompt: {e}")
-            return {
-                'status': 'error',
-                'error': str(e),
-                'timestamp': datetime.now().isoformat()
-            }
+            return {'status': 'error', 'error': str(e)}
 
-# Instantiate EnhancedGuardrail once at the module level
+# Instantiate the guardrail
 _guardrail_instance = EnhancedGuardrail()
 
 async def pipeline(prompt: str) -> Dict[str, Any]:
