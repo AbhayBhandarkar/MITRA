@@ -24,6 +24,12 @@
             <button class="new-chat" onclick="startNewChat()" aria-label="Start a new chat">
                 <i class="fas fa-plus"></i> New Chat
             </button>
+
+            <!-- Optional: Link to visualizations.html (if you add it) -->
+            <button class="new-chat" onclick="window.location.href='/visualizations';" aria-label="View Visualizations">
+                <i class="fas fa-chart-bar"></i> Visualizations
+            </button>
+
             <div class="chat-history" id="chatHistory">
                 <!-- Chat history items will be dynamically inserted here -->
             </div>
@@ -40,7 +46,6 @@
                     <h3>Welcome to MITRA 👋</h3>
                     <p>I'm here to assist you with professional and responsible AI interactions.</p>
                 </div>
-                <!-- Example Prompts will be inserted here as system messages -->
             </div>
 
             <div class="input-container">
@@ -63,10 +68,18 @@
             </div>
         </main>
     </div>
+
     <!-- Overlay -->
     <div class="overlay" id="overlay" onclick="toggleSidebar()"></div>
+
     <!-- Confetti Library -->
     <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.5.1/dist/confetti.browser.min.js"></script>
+
+    <!-- Optional Toast Container for Blocked Prompts -->
+    <div id="toast-blocked" class="toast-blocked">
+        <i class="fas fa-exclamation-triangle"></i> Prompt Blocked!
+    </div>
+
     <!-- JavaScript File -->
     <script src="{{ url_for('static', filename='script.js') }}"></script>
 </body>

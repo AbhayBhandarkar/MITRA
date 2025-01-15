@@ -36,8 +36,6 @@ function startNewChat() {
             <p>I'm here to assist you with professional and responsible AI interactions.</p>
         </div>
     `;
-    // Optionally, clear chat history or implement other logic
-    // For example, you can clear localStorage or reset any chat-specific data
 }
 
 // Function to submit the user's message
@@ -56,8 +54,6 @@ async function submitMessage() {
 
     // Display the user's message
     addMessage(message, 'user');
-
-    // Scroll to the latest message
     scrollToLatestMessage();
 
     try {
@@ -94,6 +90,7 @@ async function submitMessage() {
 
         if (data.status === "blocked") {
             addMessage(data.error, 'bot', 'blocked');
+            showBlockedToast(); // Show a toast alert
         } else if (data.status === "allowed") {
             addMessage(data.response, 'bot');
             // Trigger confetti on successful response
@@ -124,6 +121,7 @@ function addMessage(content, sender, status = 'allowed', isSystem = false) {
     if (isSystem) {
         messageDiv.classList.add('system-message');
     } else {
+        // Apply blocked/error/allowed
         if (status === 'blocked' || status === 'error') {
             messageDiv.classList.add('blocked');
         } else {
@@ -154,57 +152,14 @@ function scrollToLatestMessage() {
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
-// Example Prompts Animation
-const examplePrompts = [
-    "How can I improve my team's productivity?",
-    "Draft a professional email to a client.",
-    "Provide a summary of the latest industry trends.",
-    "Help me create a project timeline.",
-    "What are the best practices for remote work?"
-];
-
-let currentPromptIndex = 0;
-let currentCharIndex = 0;
-let isDeleting = false;
-const typingSpeed = 100; // milliseconds per character
-const deletingSpeed = 50; // milliseconds per character
-const pauseAfterTyping = 1500; // milliseconds after full prompt is typed
-const pauseAfterDeleting = 500; // milliseconds after prompt is deleted
-
-const promptTextElement = document.getElementById('promptText');
-const cursorElement = document.getElementById('cursor');
-
-function typeEffect() {
-    const currentPrompt = examplePrompts[currentPromptIndex];
-    if (!isDeleting) {
-        // Typing phase
-        promptTextElement.textContent = currentPrompt.substring(0, currentCharIndex + 1);
-        currentCharIndex++;
-        if (currentCharIndex === currentPrompt.length) {
-            // Pause after typing
-            isDeleting = true;
-            setTimeout(typeEffect, pauseAfterTyping);
-        } else {
-            setTimeout(typeEffect, typingSpeed);
-        }
-    } else {
-        // Deleting phase
-        promptTextElement.textContent = currentPrompt.substring(0, currentCharIndex - 1);
-        currentCharIndex--;
-        if (currentCharIndex === 0) {
-            isDeleting = false;
-            currentPromptIndex = (currentPromptIndex + 1) % examplePrompts.length;
-            setTimeout(typeEffect, pauseAfterDeleting);
-        } else {
-            setTimeout(typeEffect, deletingSpeed);
-        }
-    }
+// Show a brief toast when a prompt is blocked
+function showBlockedToast() {
+    const toast = document.getElementById('toast-blocked');
+    toast.style.display = 'block';
+    setTimeout(() => {
+        toast.style.display = 'none';
+    }, 3000); 
 }
-
-// Initialize typing effect on DOM load
-document.addEventListener('DOMContentLoaded', () => {
-    typeEffect();
-});
 
 // Sidebar Toggle Function
 function toggleSidebar() {
@@ -221,7 +176,6 @@ function selectChatItem() {
     }
 }
 
-// Attach selectChatItem to chat items
 document.addEventListener('click', function(event) {
     if (event.target.closest('.chat-item')) {
         selectChatItem();

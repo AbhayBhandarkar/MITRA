@@ -117,6 +117,7 @@ body {
 .new-chat:hover {
   background: var(--primary-hover); /* Darker shade on hover */
   transform: translateY(-2px);
+  box-shadow: var(--glow);
 }
 
 .chat-history {
@@ -177,6 +178,12 @@ body {
   display: flex;
   gap: 1rem;
   animation: slideUp 0.3s ease;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+
+.message:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
 }
 
 @keyframes slideUp {
@@ -233,6 +240,26 @@ body {
   color: var(--bot-text);
   border-bottom-left-radius: 4px;
   border: 1px solid var(--border);
+}
+
+/* Blocked or Error styling */
+.blocked {
+  /* Subtle red highlight on left edge */
+  border-left: 4px solid var(--error);
+  background: #fee2e2; /* Lighter red background */
+}
+
+.blocked .message-content {
+  border: 1px solid var(--error);
+  color: var(--error);
+}
+
+/* Exclamation icon next to blocked text */
+.blocked .message-content::before {
+  content: "\f06a"; /* Font Awesome exclamation-circle icon */
+  font-family: "Font Awesome 6 Free";
+  font-weight: 900;
+  margin-right: 0.5rem;
 }
 
 /* System Message Styling */
@@ -333,14 +360,14 @@ body {
 /* Example Prompts Animation */
 .example-prompts-container {
     max-width: 800px;
-    margin: 0 auto 1.5rem auto; /* Increased bottom margin */
+    margin: 0 auto 1.5rem auto; 
     padding: 0 1rem;
     font-family: 'Roboto', sans-serif;
     font-size: 0.9rem;
     color: var(--text-secondary);
     display: flex;
     align-items: center;
-    justify-content: center; /* Center the content */
+    justify-content: center;
     height: 24px;
     overflow: hidden;
     position: relative;
@@ -367,10 +394,25 @@ body {
 
 /* Input Footer */
 .input-footer {
-    text-align: center; /* Center the footer text */
+    text-align: center;
     margin-top: 0.5rem;
     font-size: 0.85rem;
     color: var(--text-secondary);
+}
+
+/* Toast for blocked prompt */
+.toast-blocked {
+  display: none;
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  background-color: var(--error);
+  color: #fff;
+  padding: 10px 20px;
+  border-radius: 5px;
+  z-index: 9999;
+  font-weight: 500;
+  box-shadow: 0 4px 8px rgba(0,0,0,0.1);
 }
 
 /* Focus styles for accessibility */
