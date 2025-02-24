@@ -79,7 +79,7 @@ class EnhancedGuardrail:
             'thresholds': {
                 'toxicity': 0.5,
                 'jailbreak': 0.8,
-                'zero_shot': 0.7,  # threshold for the zero-shot classifier
+                'zero_shot': 0.6,  # threshold for the zero-shot classifier
                 'combined': 0.6
             },
             'models': {
