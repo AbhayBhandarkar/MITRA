@@ -1,5 +1,3 @@
-# app.py
-
 import logging
 from flask import Flask, request, render_template, jsonify
 from flask_cors import CORS
@@ -39,7 +37,7 @@ def home():
 
 @app.route("/api/chat", methods=["POST"])
 @limiter.limit("10 per minute")
-async def chat():  # Make the route asynchronous
+async def chat():
     data = request.get_json()
     if not data or 'prompt' not in data:
         logging.warning("No prompt found in the request.")

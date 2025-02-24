@@ -5,20 +5,20 @@ import hashlib
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime
-from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline as huggingface_pipeline
-from sentence_transformers import SentenceTransformer, util
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import re
 from collections import OrderedDict
 import spacy
-from rapidfuzz import process, fuzz
 from langchain_ollama import OllamaLLM
+
+from zero_shot_filter import check_zero_shot
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s',
     handlers=[
-        logging.FileHandler('safety_guardrail.log'),
+        logging.FileHandler('logs/safety_guardrail.log'),
         logging.StreamHandler()
     ]
 )
@@ -79,16 +79,15 @@ class EnhancedGuardrail:
             'thresholds': {
                 'toxicity': 0.5,
                 'jailbreak': 0.8,
-                'similarity': 0.6,
+                'zero_shot': 0.7,  # threshold for the zero-shot classifier
                 'combined': 0.6
             },
             'models': {
                 'toxicity': 's-nlp/roberta_toxicity_classifier',
-                'jailbreak': 'madhurjindal/Jailbreak-Detector-Large',
-                'embeddings': 'all-MiniLM-L6-v2'
+                'jailbreak': 'madhurjindal/Jailbreak-Detector-Large'
             },
             'harmful_patterns': [
-                r"make.*bomb", r"bypass.*security", r"hack.*system", r"exploit.*vulnerability"
+                r"\b(make|build|manufacture)\b.*\b(bomb)\b"
             ]
         }
 
@@ -98,7 +97,6 @@ class EnhancedGuardrail:
             self.toxicity_model = AutoModelForSequenceClassification.from_pretrained(self.config['models']['toxicity']).eval()
             self.jailbreak_tokenizer = AutoTokenizer.from_pretrained(self.config['models']['jailbreak'])
             self.jailbreak_model = AutoModelForSequenceClassification.from_pretrained(self.config['models']['jailbreak']).eval()
-            self.embedding_model = SentenceTransformer(self.config['models']['embeddings'])
             logger.info("Models initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize models: {e}")
@@ -144,7 +142,7 @@ class EnhancedGuardrail:
             is_safe=is_safe,
             confidence=0.0 if not is_safe else 1.0,
             threshold=0.0,
-            details=f"Matched patterns: {found_patterns}"
+            details=f"Matched patterns: {found_patterns}" if found_patterns else "No harmful patterns detected"
         )
 
     async def evaluate_prompt(self, prompt: str) -> Tuple[bool, List[SafetyCheckResult]]:
@@ -166,6 +164,25 @@ class EnhancedGuardrail:
 
     async def process_prompt(self, prompt: str) -> Dict[str, Any]:
         try:
+            # Use the zero-shot classifier to preemptively block harmful instructions.
+            if check_zero_shot(prompt, threshold=self.config['thresholds']['zero_shot']):
+                logger.info("Zero-shot filter flagged the prompt as harmful.")
+                return {
+                    'timestamp': datetime.now().isoformat(),
+                    'prompt': prompt,
+                    'is_safe': False,
+                    'checks': [{
+                        "check_name": "Zero-shot Classification",
+                        "is_safe": False,
+                        "confidence": None,
+                        "threshold": self.config['thresholds']['zero_shot'],
+                        "details": "Prompt classified as an instruction to commit violence."
+                    }],
+                    'status': 'blocked',
+                    'error': "Blocked due to classification as a harmful instruction."
+                }
+
+            # Proceed with additional safety checks if the zero-shot filter passes.
             is_safe, safety_checks = await self.evaluate_prompt(prompt)
             result = {
                 'timestamp': datetime.now().isoformat(),
@@ -193,7 +210,7 @@ class EnhancedGuardrail:
             logger.error(f"Error processing prompt: {e}")
             return {'status': 'error', 'error': str(e)}
 
-# Instantiate the guardrail
+# Instantiate the guardrail once so that models are loaded only a single time.
 _guardrail_instance = EnhancedGuardrail()
 
 async def pipeline(prompt: str) -> Dict[str, Any]:
