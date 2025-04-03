@@ -74,13 +74,14 @@ class EnhancedGuardrail:
         self.llm = OllamaLLM(model="qwen2.5:0.5b")
 
     def _load_config(self) -> Dict[str, Any]:
+        # Adjusted thresholds to improve discrimination.
         return {
             'cache_size': 1000,
             'thresholds': {
-                'toxicity': 0.5,
-                'jailbreak': 0.8,
-                'zero_shot': 0.6,  # threshold for the zero-shot classifier
-                'combined': 0.6
+                'toxicity': 0.5,      # increased to reduce false positives
+                'jailbreak': 0.6,    # slightly lower to catch more harmful cues
+                'zero_shot': 0.5,     # base threshold (dynamic adjustment happens in zero_shot_filter.py)
+                'combined': 0.6       # not directly used in composite calculation
             },
             'models': {
                 'toxicity': 's-nlp/roberta_toxicity_classifier',
@@ -152,19 +153,39 @@ class EnhancedGuardrail:
             logger.info("Using cached safety check results")
             return cached_result
 
+        # Run toxicity, jailbreak, and regex checks in parallel.
         safety_checks = await asyncio.gather(
             self.check_toxicity(prompt),
             self.check_jailbreak(prompt),
             self.check_patterns(prompt)
         )
 
-        is_safe = all(check.is_safe for check in safety_checks)
+        toxicity_check = safety_checks[0]
+        jailbreak_check = safety_checks[1]
+        pattern_check = safety_checks[2]
+
+        # Log individual model outputs
+        logger.info(f"Toxicity: {toxicity_check.confidence:.3f} (Threshold: {self.config['thresholds']['toxicity']})")
+        logger.info(f"Jailbreak: {jailbreak_check.confidence:.3f} (Threshold: {self.config['thresholds']['jailbreak']})")
+        logger.info(f"Pattern Matching: {'Blocked' if not pattern_check.is_safe else 'Passed'}")
+
+        # Hard block if any regex matches occur.
+        if not pattern_check.is_safe:
+            is_safe = False
+        else:
+            # Normalize toxicity and jailbreak scores by their respective thresholds.
+            norm_toxicity = toxicity_check.confidence / self.config['thresholds']['toxicity']
+            norm_jailbreak = jailbreak_check.confidence / self.config['thresholds']['jailbreak']
+            composite_score = max(norm_toxicity, norm_jailbreak)
+            # If composite score exceeds 1.0, consider the prompt unsafe.
+            is_safe = composite_score < 1.0
+
         await self.cache.put(prompt_hash, (is_safe, safety_checks))
         return is_safe, safety_checks
 
     async def process_prompt(self, prompt: str) -> Dict[str, Any]:
         try:
-            # Use the zero-shot classifier to preemptively block harmful instructions.
+            # First, use the zero-shot classifier to quickly flag harmful prompts.
             if check_zero_shot(prompt, threshold=self.config['thresholds']['zero_shot']):
                 logger.info("Zero-shot filter flagged the prompt as harmful.")
                 return {
@@ -182,7 +203,7 @@ class EnhancedGuardrail:
                     'error': "Blocked due to classification as a harmful instruction."
                 }
 
-            # Proceed with additional safety checks if the zero-shot filter passes.
+            # If the prompt passes the zero-shot filter, run the other safety checks.
             is_safe, safety_checks = await self.evaluate_prompt(prompt)
             result = {
                 'timestamp': datetime.now().isoformat(),
