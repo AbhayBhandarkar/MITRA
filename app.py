@@ -1,17 +1,17 @@
 import logging
+import os
+import asyncio
 from flask import Flask, request, render_template, jsonify
 from flask_cors import CORS
-from pipeline import pipeline
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-import os
-import asyncio  # Ensure asyncio is imported
+from pipeline import pipeline
 
 # Ensure the logs directory exists
 if not os.path.exists('logs'):
     os.makedirs('logs')
 
-# Initialize logging
+# Configure logging for the app
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -24,7 +24,7 @@ logging.basicConfig(
 app = Flask(__name__)
 CORS(app)
 
-# Initialize Limiter for rate limiting
+# Rate limiting configuration
 limiter = Limiter(
     app,
     key_func=get_remote_address,
@@ -44,28 +44,29 @@ async def chat():
         return jsonify({"status": "error", "error": "No prompt provided."}), 400
 
     prompt = data.get("prompt", "")
-    logging.info(f"Received prompt: {prompt}")
+    logging.info(f"Received prompt: {prompt[:50]}...")
 
     try:
-        # Await the async pipeline function directly
         response = await pipeline(prompt)
         logging.info(f"Pipeline Result: {response}")
-
         if response.get("is_safe"):
             return jsonify({
                 "status": "allowed",
                 "response": response.get("response", "No response generated."),
-                "checks": response.get("checks", [])
+                "checks": response.get("checks", []),
+                "latency": response.get("latency", None),
+                "composite_score": response.get("composite_score", None)
             })
         else:
             return jsonify({
                 "status": "blocked",
                 "error": response.get("error", "Blocked due to safety concerns."),
-                "checks": response.get("checks", [])
+                "checks": response.get("checks", []),
+                "latency": response.get("latency", None),
+                "composite_score": response.get("composite_score", None)
             }), 403
-
     except Exception as e:
-        logging.error(f"Error in processing: {e}")
+        logging.error(f"Error processing prompt: {e}")
         return jsonify({"status": "error", "error": str(e)}), 500
 
 if __name__ == "__main__":
