@@ -70,8 +70,7 @@ class LRUCache(OrderedDict):
 class EnhancedGuardrail:
     """
     Enhanced guardrail system for safety checks.
-    Combines zero-shot filtering, toxicity/jailbreak detection, and regex pattern matching.
-    Measures and logs individual component latencies and computes a composite safety score.
+    Incorporates conversation context by concatenating the last N turns.
     """
     def __init__(self):
         self.config = self._load_config()
@@ -88,7 +87,6 @@ class EnhancedGuardrail:
                 'toxicity': 0.5,
                 'jailbreak': 0.6,
                 'zero_shot': 0.5,
-                'combined': 0.6
             },
             'models': {
                 'toxicity': 's-nlp/roberta_toxicity_classifier',
@@ -123,7 +121,7 @@ class EnhancedGuardrail:
                 toxicity_score = scores[0][1].item()
         except Exception as e:
             logger.error(f"Error in toxicity check: {e}")
-            toxicity_score = 1.0  # Worst-case: treat as unsafe
+            toxicity_score = 1.0
         elapsed = time.time() - start
         logger.info(f"Toxicity check took {elapsed:.3f} seconds.")
         return SafetyCheckResult(
@@ -178,108 +176,107 @@ class EnhancedGuardrail:
             latency=elapsed
         )
 
-    async def evaluate_prompt(self, prompt: str) -> Tuple[bool, List[SafetyCheckResult]]:
+    async def evaluate_prompt(self, prompt: str, context: Optional[str] = None) -> Tuple[bool, List[SafetyCheckResult], float]:
         """
-        Evaluate the prompt using toxicity, jailbreak, and pattern matching.
-        Returns a tuple (is_safe, list of SafetyCheckResult).
+        Evaluate the prompt with optional conversation context.
+        Limits the context to the last 3 turns to prevent overly long inputs.
+        Returns (is_safe, safety_checks, composite_score).
         """
-        prompt_hash = hashlib.md5(prompt.encode()).hexdigest()
-        cached_result = await self.cache.get(prompt_hash)
+        if context:
+            # Split context by newline and use only the last 3 turns
+            turns = context.strip().split("\n")
+            context = "\n".join(turns[-3:])
+        combined_prompt = (context + "\n" if context else "") + prompt
+
+        cache_key = hashlib.md5(combined_prompt.encode()).hexdigest()
+        cached_result = await self.cache.get(cache_key)
         if cached_result:
             logger.info("Using cached safety check results.")
             return cached_result
 
-        # Run all safety checks concurrently.
         results = await asyncio.gather(
-            self.check_toxicity(prompt),
-            self.check_jailbreak(prompt),
-            self.check_patterns(prompt)
+            self.check_toxicity(combined_prompt),
+            self.check_jailbreak(combined_prompt),
+            self.check_patterns(combined_prompt)
         )
         toxicity_check, jailbreak_check, pattern_check = results
 
-        logger.info(f"Toxicity: {toxicity_check.confidence:.3f} (Threshold: {self.config['thresholds']['toxicity']})")
-        logger.info(f"Jailbreak: {jailbreak_check.confidence:.3f} (Threshold: {self.config['thresholds']['jailbreak']})")
-        logger.info(f"Pattern Matching: {'Blocked' if not pattern_check.is_safe else 'Passed'}")
+        norm_toxicity = toxicity_check.confidence / self.config['thresholds']['toxicity']
+        norm_jailbreak = jailbreak_check.confidence / self.config['thresholds']['jailbreak']
+        composite_score = max(norm_toxicity, norm_jailbreak)
+        is_safe = composite_score < 1.0 and pattern_check.is_safe
 
-        # Compute composite score from toxicity and jailbreak checks.
-        if pattern_check.is_safe:
-            norm_toxicity = toxicity_check.confidence / self.config['thresholds']['toxicity']
-            norm_jailbreak = jailbreak_check.confidence / self.config['thresholds']['jailbreak']
-            composite_score = max(norm_toxicity, norm_jailbreak)
-            is_safe = composite_score < 1.0
-        else:
-            composite_score = 1.0  # Force block if harmful pattern detected.
-            is_safe = False
-
-        await self.cache.put(prompt_hash, (is_safe, results))
-        # Return composite_score along with safety check results.
+        await self.cache.put(cache_key, (is_safe, results, composite_score))
         return is_safe, results, composite_score
 
-    async def process_prompt(self, prompt: str) -> Dict[str, Any]:
+    async def process_prompt(self, prompt: str, context: Optional[str] = None) -> Dict[str, Any]:
         """
-        Process a prompt through safety checks and generate a response using the LLM.
-        Returns detailed metrics including processing time, resource usage, composite score, and safety check results.
+        Process a prompt (with optional conversation context) through safety checks
+        and generate a response using the LLM.
+        Uses the combined prompt for the zero-shot filter.
+        Returns detailed metrics including composite score.
         """
         start_time = time.time()
-        try:
-            # First, apply zero-shot filter.
-            if check_zero_shot(prompt, threshold=self.config['thresholds']['zero_shot']):
-                logger.info("Zero-shot filter flagged the prompt as harmful.")
-                result = {
-                    'timestamp': datetime.now().isoformat(),
-                    'prompt': prompt,
-                    'is_safe': False,
-                    'checks': [{
-                        "check_name": "Zero-shot Classification",
-                        "is_safe": False,
-                        "confidence": None,
-                        "threshold": self.config['thresholds']['zero_shot'],
-                        "details": "Prompt classified as an instruction to commit violence.",
-                        "latency": 0.0
-                    }],
-                    'status': 'blocked',
-                    'error': "Blocked due to classification as a harmful instruction.",
-                    'composite_score': 1.0
-                }
-                result['latency'] = time.time() - start_time
-                logger.info(f"Processing time (zero-shot): {result['latency']:.2f} seconds.")
-                return result
+        if context:
+            turns = context.strip().split("\n")
+            context = "\n".join(turns[-3:])
+        combined_prompt = (context + "\n" if context else "") + prompt
 
-            is_safe, safety_checks, composite_score = await self.evaluate_prompt(prompt)
-            result: Dict[str, Any] = {
+        # Apply zero-shot filter to the combined prompt.
+        if check_zero_shot(combined_prompt, threshold=self.config['thresholds']['zero_shot']):
+            logger.info("Zero-shot filter flagged the combined prompt as harmful.")
+            result = {
                 'timestamp': datetime.now().isoformat(),
                 'prompt': prompt,
-                'is_safe': is_safe,
-                'checks': [vars(check) for check in safety_checks],
-                'composite_score': composite_score
+                'is_safe': False,
+                'checks': [{
+                    "check_name": "Zero-shot Classification",
+                    "is_safe": False,
+                    "confidence": None,
+                    "threshold": self.config['thresholds']['zero_shot'],
+                    "details": "Combined prompt classified as an instruction to commit violence.",
+                    "latency": 0.0
+                }],
+                'status': 'blocked',
+                'error': "Blocked due to classification as a harmful instruction.",
+                'composite_score': 1.0
             }
-
-            if not is_safe:
-                result['status'] = 'blocked'
-                violations = [check.check_name for check in safety_checks if not check.is_safe]
-                result['error'] = f"Blocked due to: {', '.join(violations)}"
-            else:
-                result['status'] = 'allowed'
-                try:
-                    response = self.llm.invoke(prompt)
-                    result['response'] = response
-                except Exception as e:
-                    logger.error(f"Failed to generate response: {e}")
-                    result['response'] = "Error generating response."
-
             result['latency'] = time.time() - start_time
-            logger.info(f"Total processing time: {result['latency']:.2f} seconds.")
+            logger.info(f"Processing time (zero-shot): {result['latency']:.2f} seconds.")
             return result
 
-        except Exception as e:
-            logger.error(f"Error processing prompt: {e}")
-            return {'status': 'error', 'error': str(e), 'latency': time.time() - start_time}
+        is_safe, safety_checks, composite_score = await self.evaluate_prompt(prompt, context)
+        result: Dict[str, Any] = {
+            'timestamp': datetime.now().isoformat(),
+            'prompt': prompt,
+            'is_safe': is_safe,
+            'checks': [vars(check) for check in safety_checks],
+            'composite_score': composite_score
+        }
 
-# Instantiate the guardrail system only once.
+        if not is_safe:
+            result['status'] = 'blocked'
+            violations = [check.check_name for check in safety_checks if not check.is_safe]
+            result['error'] = f"Blocked due to: {', '.join(violations)}"
+        else:
+            result['status'] = 'allowed'
+            try:
+                response = self.llm.invoke(prompt)
+                result['response'] = response
+            except Exception as e:
+                logger.error(f"Failed to generate response: {e}")
+                result['response'] = "Error generating response."
+
+        result['latency'] = time.time() - start_time
+        logger.info(f"Total processing time: {result['latency']:.2f} seconds.")
+        return result
+
+# Instantiate the guardrail system once.
 _guardrail_instance = EnhancedGuardrail()
 
-async def pipeline(prompt: str) -> Dict[str, Any]:
+async def pipeline(prompt: str, context: Optional[str] = None) -> Dict[str, Any]:
     """
     Asynchronous pipeline interface for processing prompts through MITRA.
+    Accepts an optional 'context' parameter (the conversation history).
     """
-    return await _guardrail_instance.process_prompt(prompt)
+    return await _guardrail_instance.process_prompt(prompt, context)

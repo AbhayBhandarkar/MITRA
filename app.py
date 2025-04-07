@@ -1,17 +1,16 @@
 import logging
 import os
 import asyncio
-from flask import Flask, request, render_template, jsonify
+from flask import Flask, request, render_template, jsonify, session
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from pipeline import pipeline
 
-# Ensure the logs directory exists
+# Ensure logs directory exists
 if not os.path.exists('logs'):
     os.makedirs('logs')
 
-# Configure logging for the app
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -22,9 +21,9 @@ logging.basicConfig(
 )
 
 app = Flask(__name__)
+app.secret_key = "replace_with_a_strong_secret_key"  # For session management
 CORS(app)
 
-# Rate limiting configuration
 limiter = Limiter(
     app,
     key_func=get_remote_address,
@@ -44,10 +43,12 @@ async def chat():
         return jsonify({"status": "error", "error": "No prompt provided."}), 400
 
     prompt = data.get("prompt", "")
+    # Retrieve conversation history (if any) from the request.
+    history = data.get("history", None)
     logging.info(f"Received prompt: {prompt[:50]}...")
 
     try:
-        response = await pipeline(prompt)
+        response = await pipeline(prompt, context=history)
         logging.info(f"Pipeline Result: {response}")
         if response.get("is_safe"):
             return jsonify({

@@ -1,6 +1,5 @@
-/* script.js - Enhanced client-side interactions for MITRA */
+/* script.js - Enhanced client-side interactions for MITRA with conversation context */
 
-// Confetti settings for successful responses.
 const confettiSettings = {
     particleCount: 100,
     spread: 70,
@@ -11,13 +10,13 @@ const triggerConfetti = () => {
     window.confetti(confettiSettings);
 };
 
-// Auto-resize textarea based on its content.
+let conversationHistory = "";  // Maintain conversation history as a string
+
 function autoResize(textarea) {
     textarea.style.height = 'auto';
     textarea.style.height = `${textarea.scrollHeight}px`;
 }
 
-// Handle Enter and Shift+Enter for message submission.
 function handleKeyDown(event) {
     if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
@@ -25,8 +24,8 @@ function handleKeyDown(event) {
     }
 }
 
-// Start a new chat session.
 function startNewChat() {
+    conversationHistory = "";  // Reset history for a new chat
     const messagesContainer = document.getElementById('messagesContainer');
     messagesContainer.innerHTML = `
         <div class="welcome-message">
@@ -35,7 +34,6 @@ function startNewChat() {
         </div>`;
 }
 
-// Submit the user's message to the backend.
 async function submitMessage() {
     const userInput = document.getElementById('userInput');
     const message = userInput.value.trim();
@@ -45,7 +43,9 @@ async function submitMessage() {
         return;
     }
 
-    // Clear and resize input.
+    // Append user's message to the conversation history.
+    conversationHistory += " " + message;
+
     userInput.value = "";
     autoResize(userInput);
     addMessage(message, 'user');
@@ -64,10 +64,11 @@ async function submitMessage() {
         messagesContainer.appendChild(loadingMessage);
         scrollToLatestMessage();
 
+        // Send both the prompt and the conversation history to the backend.
         const response = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prompt: message })
+            body: JSON.stringify({ prompt: message, history: conversationHistory })
         });
 
         const data = await response.json();
@@ -83,6 +84,10 @@ async function submitMessage() {
             addMessage("An error occurred while processing your request.", 'bot', 'error');
             console.error("Error from backend:", data.error);
         }
+        // Append bot response to conversation history.
+        if(data.response) {
+            conversationHistory += " " + data.response;
+        }
     } catch (error) {
         console.error("Error:", error);
         addMessage("An unexpected error occurred.", 'bot', 'error');
@@ -93,7 +98,6 @@ async function submitMessage() {
     }
 }
 
-// Append a message to the chat container.
 function addMessage(content, sender, status = 'allowed', isSystem = false) {
     const messagesContainer = document.getElementById('messagesContainer');
     const messageDiv = document.createElement('div');
@@ -121,13 +125,11 @@ function addMessage(content, sender, status = 'allowed', isSystem = false) {
     messagesContainer.appendChild(messageDiv);
 }
 
-// Scroll to the latest message.
 function scrollToLatestMessage() {
     const messagesContainer = document.getElementById('messagesContainer');
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
-// Display a temporary toast notification for blocked prompts.
 function showBlockedToast() {
     const toast = document.getElementById('toast-blocked');
     toast.style.display = 'block';
@@ -136,7 +138,6 @@ function showBlockedToast() {
     }, 3000);
 }
 
-// Sidebar toggle for mobile view.
 function toggleSidebar() {
     const sidebar = document.querySelector('.sidebar');
     const overlay = document.getElementById('overlay');
@@ -144,7 +145,6 @@ function toggleSidebar() {
     overlay.classList.toggle('active');
 }
 
-// Collapse sidebar on chat item click (mobile).
 function selectChatItem() {
     if (window.innerWidth <= 768) {
         toggleSidebar();
